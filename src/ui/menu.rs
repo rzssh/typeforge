@@ -35,6 +35,15 @@ pub fn render(frame: &mut Frame, app: &App) {
             ("practice", app.settings.practice.label().into()),
             ("language", app.settings.code_language.label().into()),
             ("mistakes", app.settings.mistake_mode.label().into()),
+            (
+                "autopairs",
+                if app.settings.code_autopairs {
+                    "On · () [] {}"
+                } else {
+                    "Off"
+                }
+                .into(),
+            ),
             ("caret", app.settings.caret_style.label().into()),
             ("", "Start session".into()),
         ],

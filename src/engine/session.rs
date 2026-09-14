@@ -47,11 +47,22 @@ pub struct Session {
     last_keystroke: Option<Instant>,
     pub char_time_ms: HashMap<char, (u64, u32)>,
     pub char_correct: HashMap<char, u32>,
+    autopair_openers: Vec<Option<usize>>,
 }
 
 impl Session {
-    pub fn new(content: TypingContent, mode: SessionMode, mistake_mode: MistakeMode) -> Self {
+    pub fn new(
+        content: TypingContent,
+        mode: SessionMode,
+        mistake_mode: MistakeMode,
+        autopairs: bool,
+    ) -> Self {
         let chars: Vec<char> = content.text.chars().collect();
+        let autopair_openers = if autopairs {
+            matched_bracket_openers(&chars)
+        } else {
+            vec![None; chars.len()]
+        };
         Self {
             content,
             results: vec![CharResult::Pending; chars.len()],
@@ -69,10 +80,12 @@ impl Session {
             last_keystroke: None,
             char_time_ms: HashMap::new(),
             char_correct: HashMap::new(),
+            autopair_openers,
         }
     }
 
     pub fn type_char(&mut self, typed: char) {
+        self.skip_auto_paired_closers();
         if self.cursor >= self.chars.len() {
             return;
         }
@@ -109,6 +122,7 @@ impl Session {
             }
             self.cursor += 1;
         }
+        self.skip_auto_paired_closers();
     }
 
     fn skip_indentation_after_newline(&mut self, expected: char) {
@@ -121,7 +135,36 @@ impl Session {
         }
     }
 
+    fn skip_auto_paired_closers(&mut self) {
+        let auto_paired_tail = self.strict_error_start.is_none()
+            && self.chars.get(self.cursor) == Some(&'\n')
+            && self.chars[self.cursor..]
+                .iter()
+                .enumerate()
+                .all(|(offset, character)| {
+                    character.is_whitespace() || self.is_auto_paired(self.cursor + offset)
+                })
+            && (self.cursor..self.chars.len()).any(|index| self.is_auto_paired(index));
+        if auto_paired_tail {
+            self.results[self.cursor..].fill(CharResult::Skipped);
+            self.cursor = self.chars.len();
+            return;
+        }
+        while self.is_auto_paired(self.cursor) {
+            self.results[self.cursor] = CharResult::Skipped;
+            self.cursor += 1;
+        }
+    }
+
+    pub fn is_auto_paired(&self, index: usize) -> bool {
+        self.autopair_openers
+            .get(index)
+            .and_then(|opener| *opener)
+            .is_some_and(|opener| self.results[opener] == CharResult::Correct)
+    }
+
     pub fn backspace(&mut self) {
+        self.skip_auto_pairs_backward();
         if self.cursor == 0 {
             return;
         }
@@ -136,7 +179,15 @@ impl Session {
         self.corrections += 1;
     }
 
+    fn skip_auto_pairs_backward(&mut self) {
+        while self.cursor > 0 && self.is_auto_paired(self.cursor - 1) {
+            self.cursor -= 1;
+            self.results[self.cursor] = CharResult::Pending;
+        }
+    }
+
     pub fn delete_word(&mut self) {
+        self.skip_auto_pairs_backward();
         while self.cursor > 0 && self.chars[self.cursor - 1].is_whitespace() {
             self.backspace();
         }
@@ -156,6 +207,7 @@ impl Session {
     }
 
     pub fn delete_line(&mut self) {
+        self.skip_auto_pairs_backward();
         while self.cursor > 0 && self.chars[self.cursor - 1] != '\n' {
             self.backspace();
         }
@@ -225,6 +277,27 @@ impl Session {
     }
 }
 
+fn matched_bracket_openers(chars: &[char]) -> Vec<Option<usize>> {
+    let mut openers = Vec::new();
+    let mut matches = vec![None; chars.len()];
+    for (index, character) in chars.iter().copied().enumerate() {
+        if let Some(closer) = match character {
+            '(' => Some(')'),
+            '[' => Some(']'),
+            '{' => Some('}'),
+            _ => None,
+        } {
+            openers.push((index, closer));
+        } else if openers
+            .last()
+            .is_some_and(|(_, closer)| *closer == character)
+        {
+            matches[index] = openers.pop().map(|(index, _)| index);
+        }
+    }
+    matches
+}
+
 fn visible(character: char) -> String {
     match character {
         ' ' => "space".into(),
@@ -255,6 +328,7 @@ mod tests {
             content("abcd"),
             SessionMode::WordCount(1),
             MistakeMode::Strict,
+            false,
         );
         session.type_char('x');
         session.type_char('b');
@@ -269,7 +343,12 @@ mod tests {
 
     #[test]
     fn free_mode_advances_on_error() {
-        let mut session = Session::new(content("ab"), SessionMode::WordCount(1), MistakeMode::Free);
+        let mut session = Session::new(
+            content("ab"),
+            SessionMode::WordCount(1),
+            MistakeMode::Free,
+            false,
+        );
         session.type_char('x');
         assert_eq!(session.cursor, 1);
     }
@@ -280,6 +359,7 @@ mod tests {
             content("ab"),
             SessionMode::WordCount(1),
             MistakeMode::Strict,
+            false,
         );
         session.type_char('x');
         session.type_char('b');
@@ -293,6 +373,7 @@ mod tests {
             content("alpha beta_value + gamma"),
             SessionMode::WordCount(3),
             MistakeMode::Free,
+            false,
         );
         for character in "alpha beta_value + ".chars() {
             session.type_char(character);
@@ -309,9 +390,185 @@ mod tests {
             content("a\n    b"),
             SessionMode::Snippet,
             MistakeMode::Strict,
+            false,
         );
         session.type_char('a');
         session.type_char('\n');
         assert_eq!(session.cursor, 6);
+    }
+
+    #[test]
+    fn autopairs_skip_matched_closing_brackets() {
+        let mut session = Session::new(
+            content("call([x]) { y }"),
+            SessionMode::Snippet,
+            MistakeMode::Strict,
+            true,
+        );
+        for character in "call(".chars() {
+            session.type_char(character);
+        }
+        assert!(session.is_auto_paired(8));
+        assert_eq!(session.results[8], CharResult::Pending);
+        for character in "[x { y ".chars() {
+            session.type_char(character);
+        }
+        assert!(session.is_complete());
+        assert_eq!(session.total_keystrokes, 12);
+        assert_eq!(
+            session
+                .results
+                .iter()
+                .filter(|result| **result == CharResult::Skipped)
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn backspace_skips_nested_auto_paired_closers() {
+        let mut session = Session::new(
+            content("([x])y"),
+            SessionMode::Snippet,
+            MistakeMode::Strict,
+            true,
+        );
+        for character in "([x".chars() {
+            session.type_char(character);
+        }
+        session.backspace();
+        assert_eq!(session.cursor, 2);
+        assert_eq!(session.results[2], CharResult::Pending);
+        assert_eq!(session.results[3..5], [CharResult::Pending; 2]);
+        assert_eq!(session.corrections, 1);
+        session.type_char('x');
+        assert_eq!(session.cursor, 5);
+    }
+
+    #[test]
+    fn backspace_removes_empty_auto_pair_as_one_input() {
+        let mut session = Session::new(
+            content("()x"),
+            SessionMode::Snippet,
+            MistakeMode::Strict,
+            true,
+        );
+        session.type_char('(');
+        session.backspace();
+        assert_eq!(session.cursor, 0);
+        assert_eq!(&session.results[..2], &[CharResult::Pending; 2]);
+        assert!(!session.is_auto_paired(1));
+        assert_eq!(session.corrections, 1);
+    }
+
+    #[test]
+    fn backspace_crosses_auto_pair_without_clearing_earlier_strict_error() {
+        let mut session = Session::new(
+            content("(ab)c"),
+            SessionMode::Snippet,
+            MistakeMode::Strict,
+            true,
+        );
+        session.type_char('(');
+        session.type_char('x');
+        session.type_char('b');
+        session.backspace();
+        assert_eq!(session.cursor, 2);
+        assert_eq!(session.latest_error(), Some(('a', 'x')));
+        session.backspace();
+        assert_eq!(session.cursor, 1);
+        assert_eq!(session.latest_error(), None);
+    }
+
+    #[test]
+    fn backspace_does_not_skip_unmatched_closers() {
+        let mut session = Session::new(
+            content("x}y"),
+            SessionMode::Snippet,
+            MistakeMode::Strict,
+            true,
+        );
+        session.type_char('x');
+        session.type_char('}');
+        session.backspace();
+        assert_eq!(session.cursor, 1);
+        assert_eq!(session.results[1], CharResult::Pending);
+    }
+
+    #[test]
+    fn word_delete_ignores_auto_paired_closers() {
+        let mut session = Session::new(
+            content("(word) x"),
+            SessionMode::Snippet,
+            MistakeMode::Strict,
+            true,
+        );
+        for character in "(word".chars() {
+            session.type_char(character);
+        }
+        session.delete_word();
+        assert_eq!(session.cursor, 1);
+        assert_eq!(session.results[5], CharResult::Pending);
+    }
+
+    #[test]
+    fn line_delete_stops_before_auto_paired_closing_line() {
+        let mut session = Session::new(
+            content("{\nx\n}y"),
+            SessionMode::Snippet,
+            MistakeMode::Strict,
+            true,
+        );
+        for character in "{\nx\n".chars() {
+            session.type_char(character);
+        }
+        session.delete_line();
+        assert_eq!(session.cursor, 4);
+        assert_eq!(session.results[4], CharResult::Pending);
+    }
+
+    #[test]
+    fn autopairs_finish_before_final_closing_line() {
+        let mut session = Session::new(
+            content("{\nx\n}"),
+            SessionMode::Snippet,
+            MistakeMode::Strict,
+            true,
+        );
+        for character in "{\nx".chars() {
+            session.type_char(character);
+        }
+        assert!(session.is_complete());
+        assert_eq!(&session.results[3..], &[CharResult::Skipped; 2]);
+    }
+
+    #[test]
+    fn autopairs_skip_closers_after_free_mode_errors() {
+        let mut session = Session::new(
+            content("(a)"),
+            SessionMode::Snippet,
+            MistakeMode::Free,
+            true,
+        );
+        session.type_char('(');
+        session.type_char('x');
+        assert!(session.is_complete());
+        assert_eq!(session.results[2], CharResult::Skipped);
+    }
+
+    #[test]
+    fn autopairs_do_not_skip_unmatched_closers() {
+        let mut session = Session::new(
+            content("print(\"}\")"),
+            SessionMode::Snippet,
+            MistakeMode::Strict,
+            true,
+        );
+        for character in "print(\"}\"".chars() {
+            session.type_char(character);
+        }
+        assert!(session.is_complete());
+        assert_eq!(session.results[7], CharResult::Correct);
+        assert_eq!(session.results[9], CharResult::Skipped);
     }
 }

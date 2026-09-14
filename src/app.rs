@@ -64,6 +64,7 @@ pub struct Settings {
     pub code_language: CodeLanguage,
     pub mistake_mode: MistakeMode,
     pub lowercase_words: bool,
+    pub code_autopairs: bool,
     pub caret_style: CaretStyle,
 }
 
@@ -78,6 +79,7 @@ impl Default for Settings {
             code_language: CodeLanguage::Rust,
             mistake_mode: MistakeMode::Strict,
             lowercase_words: true,
+            code_autopairs: false,
             caret_style: CaretStyle::BlinkingBar,
         }
     }
@@ -142,7 +144,7 @@ impl App {
     pub fn menu_rows(&self) -> usize {
         match self.settings.practice {
             PracticeKind::Words => 9,
-            PracticeKind::Code => 5,
+            PracticeKind::Code => 6,
         }
     }
 
@@ -222,13 +224,16 @@ impl App {
             (PracticeKind::Words, 6) => {
                 self.settings.lowercase_words = !self.settings.lowercase_words;
             }
-            (PracticeKind::Words, 7) | (PracticeKind::Code, 3) => {
+            (PracticeKind::Words, 7) | (PracticeKind::Code, 4) => {
                 self.settings.caret_style =
                     cycle(self.settings.caret_style, &CaretStyle::ALL, forward)
             }
             (PracticeKind::Code, 1) => {
                 self.settings.code_language =
                     cycle(self.settings.code_language, &CodeLanguage::ALL, forward)
+            }
+            (PracticeKind::Code, 3) => {
+                self.settings.code_autopairs = !self.settings.code_autopairs;
             }
             _ => {}
         }
@@ -379,8 +384,15 @@ impl App {
     }
 
     fn begin(&mut self, content: TypingContent, mode: SessionMode) {
+        let autopairs =
+            self.settings.code_autopairs && matches!(&content.source, ContentSource::Code(_));
         self.last_content = Some(content.clone());
-        self.session = Some(Session::new(content, mode, self.settings.mistake_mode));
+        self.session = Some(Session::new(
+            content,
+            mode,
+            self.settings.mistake_mode,
+            autopairs,
+        ));
         self.state = AppState::Typing;
     }
 
@@ -463,9 +475,14 @@ impl App {
                     snippet.kind.clone(),
                     snippet.language.label().into(),
                     format!(
-                        "code:{}:{}",
+                        "code:{}:{}{}",
                         snippet.language.slug(),
-                        session.mistake_mode.label()
+                        session.mistake_mode.label(),
+                        if self.settings.code_autopairs {
+                            ":autopairs"
+                        } else {
+                            ""
+                        }
                     ),
                     Some(format!(
                         "{} · {} · {}\n{}",
@@ -542,7 +559,10 @@ fn cycle<T: Copy + PartialEq>(current: T, values: &[T], forward: bool) -> T {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, CaretStyle, SessionMode, Settings, StatsStore, word_sample_size};
+    use super::{
+        App, CaretStyle, ContentSource, SessionMode, Settings, StatsStore, TypingContent,
+        WordLanguage, WordListSize, word_sample_size,
+    };
 
     #[test]
     fn lowercase_words_is_enabled_by_default() {
@@ -573,11 +593,30 @@ mod tests {
     }
 
     #[test]
+    fn retry_resets_active_session() {
+        let mut app = App::with_stats(StatsStore::default(), None);
+        app.begin(
+            TypingContent {
+                text: "ab".into(),
+                source: ContentSource::Words {
+                    language: WordLanguage::English,
+                    size: WordListSize::Top200,
+                },
+            },
+            SessionMode::WordCount(1),
+        );
+        app.type_char('a');
+        app.retry();
+        assert_eq!(app.session.as_ref().unwrap().cursor, 0);
+    }
+
+    #[test]
     fn old_settings_receive_default_caret() {
         let settings: Settings = serde_json::from_str(
             r#"{"practice":"Words","word_language":"English","word_list":"Top1k","word_length":"Any","word_mode":{"Timed":30},"code_language":"Rust","mistake_mode":"Strict","lowercase_words":true}"#,
         )
         .unwrap();
         assert_eq!(settings.caret_style, CaretStyle::BlinkingBar);
+        assert!(!settings.code_autopairs);
     }
 }

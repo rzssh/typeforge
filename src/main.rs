@@ -144,6 +144,7 @@ fn handle_typing_key(app: &mut app::App, key: KeyEvent) {
         match key.code {
             KeyCode::Backspace | KeyCode::Char('w') => app.delete_word(),
             KeyCode::Char('h') => app.backspace(),
+            KeyCode::Char('r') => app.retry(),
             KeyCode::Char('u') => app.delete_line(),
             _ => {}
         }
@@ -158,6 +159,7 @@ fn handle_typing_key(app: &mut app::App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.state = app::AppState::Menu,
         KeyCode::F(2) => app.show_typed = !app.show_typed,
+        KeyCode::F(3) => app.retry(),
         KeyCode::Backspace => app.backspace(),
         KeyCode::Enter => app.type_char('\n'),
         KeyCode::Tab => app.cycle_session(),

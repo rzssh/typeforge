@@ -39,6 +39,7 @@ GITHUB_TOKEN=... typeforge
 - complete functions, classes, interfaces, implementations, and related structures instead of arbitrary line slices;
 - terminal syntax highlighting;
 - strict correction and free-typing modes;
+- optional code autopairs for `()`, `[]`, and `{}`;
 - stable wrapped word view and source-line scrolling for code;
 - native blinking or steady bar, block, and underline carets;
 - live WPM, accuracy, error count, and prominent session progress;
@@ -64,6 +65,7 @@ GITHUB_TOKEN=... typeforge
 ### Session
 
 - `F2`: switch between expected and typed text
+- `Ctrl-R` or `F3`: restart the current session
 - `Backspace`: remove one character
 - `Ctrl-W`, `Ctrl-Backspace`, or `Alt-Backspace`: remove one word
 - `Ctrl-U`: remove current line

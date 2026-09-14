@@ -114,10 +114,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         )));
     }
     let controls = if footer.width < 90 {
-        "F2 view · Tab next · Ctrl-W word · Ctrl-U line · Esc menu".into()
+        "F2 view · ^R restart · Tab next · ^W word · ^U line · Esc menu".into()
     } else {
         format!(
-            "F2 view · Tab next · Ctrl-W delete word · Ctrl-U delete line · {} mistakes · Esc menu",
+            "F2 view · Ctrl-R/F3 restart · Tab next · Ctrl-W delete word · Ctrl-U delete line · {} mistakes · Esc menu",
             session.mistake_mode.label()
         )
     };
@@ -319,6 +319,7 @@ fn expected_lines<'a>(session: &crate::engine::session::Session, base: &[Color])
         let style = match session.results[index] {
             CharResult::Correct | CharResult::Skipped => Style::default().fg(SUCCESS),
             CharResult::Incorrect(_) => mistake_style(),
+            CharResult::Pending if session.is_auto_paired(index) => Style::default().fg(SUCCESS),
             CharResult::Pending => Style::default().fg(base[index]),
         };
         lines
@@ -438,12 +439,15 @@ fn visible_mistake(character: char) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{line_cursor, meter, render_code, render_words, typed_buffer, wrap_words};
+    use super::{
+        expected_lines, line_cursor, meter, render_code, render_words, typed_buffer, wrap_words,
+    };
     use crate::engine::content::{
         ContentSource, MistakeMode, TypingContent, WordLanguage, WordListSize,
     };
     use crate::engine::session::{Session, SessionMode};
-    use ratatui::prelude::{Backend, Line, Position, Terminal};
+    use crate::ui::SUCCESS;
+    use ratatui::prelude::{Backend, Color, Line, Position, Terminal};
 
     #[test]
     fn line_cursor_tracks_source_lines() {
@@ -514,6 +518,25 @@ mod tests {
     }
 
     #[test]
+    fn auto_paired_closer_is_green_before_cursor_reaches_it() {
+        let mut session = Session::new(
+            TypingContent {
+                text: "(x)".into(),
+                source: ContentSource::Words {
+                    language: WordLanguage::English,
+                    size: WordListSize::Top200,
+                },
+            },
+            SessionMode::Snippet,
+            MistakeMode::Strict,
+            true,
+        );
+        session.type_char('(');
+        let lines = expected_lines(&session, &[Color::White; 3]);
+        assert_eq!(lines[0].spans[2].style.fg, Some(SUCCESS));
+    }
+
+    #[test]
     fn typed_buffer_keeps_actual_mistakes() {
         let mut session = Session::new(
             TypingContent {
@@ -525,6 +548,7 @@ mod tests {
             },
             SessionMode::WordCount(1),
             MistakeMode::Free,
+            false,
         );
         session.type_char('a');
         session.type_char('x');
@@ -543,6 +567,7 @@ mod tests {
             },
             SessionMode::WordCount(2),
             MistakeMode::Free,
+            false,
         );
         for character in "one ".chars() {
             session.type_char(character);
