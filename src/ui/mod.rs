@@ -1,3 +1,4 @@
+mod analysis;
 mod menu;
 mod results;
 mod room;
@@ -38,6 +39,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         AppState::Typing => typing::render(frame, app),
         AppState::Results if app.multiplayer.is_some() => room::render_results(frame, app),
         AppState::Results => results::render(frame, app),
+        AppState::Analysis => analysis::render(frame, app),
         AppState::Stats => stats::render(frame, app),
     }
 }

@@ -10,7 +10,7 @@ use crate::engine::content::{
     WordLength, WordListSize,
 };
 use crate::engine::corpus::{self, LoadRequest, LoadResult};
-use crate::engine::session::{Session, SessionMode};
+use crate::engine::session::{KeystrokeEvent, ProgressEvent, Session, SessionMode};
 use crate::multiplayer::client::{ConnectionStatus, NetworkClient, NetworkEvent};
 use crate::multiplayer::protocol::{ClientMessage, RoomPhase, RoomSnapshot, ServerMessage, now_ms};
 use crate::stats::history::StatsStore;
@@ -24,6 +24,7 @@ pub enum AppState {
     Countdown,
     Typing,
     Results,
+    Analysis,
     Stats,
 }
 
@@ -92,6 +93,15 @@ impl Default for Settings {
 }
 
 #[derive(Debug, Clone)]
+pub struct SessionAnalysis {
+    pub text: String,
+    pub keystrokes: Vec<KeystrokeEvent>,
+    pub progress: Vec<ProgressEvent>,
+    pub correct_positions: Vec<bool>,
+    pub final_cursor: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct SessionResult {
     pub content: String,
     pub language: String,
@@ -110,6 +120,7 @@ pub struct SessionResult {
     pub repository: Option<String>,
     pub confusion: HashMap<String, u32>,
     pub character_stats: HashMap<char, (u64, u32, u32)>,
+    pub analysis: SessionAnalysis,
 }
 
 pub struct MultiplayerState {
@@ -127,6 +138,7 @@ pub struct App {
     pub settings: Settings,
     pub menu_selection: usize,
     pub room_entry_selection: usize,
+    pub analysis_line: usize,
     pub room_code_input: String,
     pub player_name: String,
     pub session: Option<Session>,
@@ -153,6 +165,7 @@ impl App {
             settings,
             menu_selection: 0,
             room_entry_selection: 1,
+            analysis_line: 0,
             room_code_input: String::new(),
             player_name: default_player_name(),
             session: None,
@@ -498,7 +511,9 @@ impl App {
         if let Some(multiplayer) = &mut self.multiplayer {
             multiplayer.room = Some(room.clone());
         }
-        if self.state == AppState::Results && self.multiplayer.is_some() {
+        if matches!(self.state, AppState::Results | AppState::Analysis)
+            && self.multiplayer.is_some()
+        {
             return;
         }
         match phase {
@@ -773,6 +788,30 @@ impl App {
         self.session.as_ref().is_some_and(Session::is_timed_out)
     }
 
+    pub fn open_analysis(&mut self) {
+        if self.last_result.is_some() {
+            self.analysis_line = 0;
+            self.state = AppState::Analysis;
+        }
+    }
+
+    pub fn close_analysis(&mut self) {
+        self.state = AppState::Results;
+    }
+
+    pub fn analysis_line_next(&mut self) {
+        let lines = self
+            .last_result
+            .as_ref()
+            .map(|result| result.analysis.text.split('\n').count())
+            .unwrap_or(0);
+        self.analysis_line = (self.analysis_line + 1).min(lines.saturating_sub(1));
+    }
+
+    pub fn analysis_line_prev(&mut self) {
+        self.analysis_line = self.analysis_line.saturating_sub(1);
+    }
+
     pub fn finish_session(&mut self) {
         self.send_progress(true);
         let Some(session) = self.session.take() else {
@@ -817,6 +856,17 @@ impl App {
                     Some(snippet.repository.clone()),
                 ),
             };
+        let analysis = SessionAnalysis {
+            text: session.content.text.clone(),
+            keystrokes: session.keystrokes.clone(),
+            progress: session.progress.clone(),
+            correct_positions: session
+                .results
+                .iter()
+                .map(|result| matches!(result, crate::engine::session::CharResult::Correct))
+                .collect(),
+            final_cursor: session.cursor,
+        };
         let character_stats = session
             .char_time_ms
             .iter()
@@ -851,6 +901,7 @@ impl App {
             repository,
             confusion: session.confusion,
             character_stats,
+            analysis,
         };
         self.stats_store.record(&result);
         if let Err(error) = self.stats_store.save() {

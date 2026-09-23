@@ -30,6 +30,21 @@ pub enum CharResult {
     Incorrect(char),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeystrokeEvent {
+    pub elapsed_ms: u64,
+    pub position: usize,
+    pub expected: char,
+    pub typed: char,
+    pub accepted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgressEvent {
+    pub elapsed_ms: u64,
+    pub correct_chars: u32,
+}
+
 pub struct Session {
     pub content: TypingContent,
     pub chars: Vec<char>,
@@ -47,6 +62,8 @@ pub struct Session {
     last_keystroke: Option<Instant>,
     pub char_time_ms: HashMap<char, (u64, u32)>,
     pub char_correct: HashMap<char, u32>,
+    pub keystrokes: Vec<KeystrokeEvent>,
+    pub progress: Vec<ProgressEvent>,
     autopair_openers: Vec<Option<usize>>,
 }
 
@@ -80,6 +97,8 @@ impl Session {
             last_keystroke: None,
             char_time_ms: HashMap::new(),
             char_correct: HashMap::new(),
+            keystrokes: Vec::new(),
+            progress: Vec::new(),
             autopair_openers,
         }
     }
@@ -98,6 +117,16 @@ impl Session {
             .unwrap_or(0);
         self.last_keystroke = Some(now);
         self.total_keystrokes += 1;
+        self.keystrokes.push(KeystrokeEvent {
+            elapsed_ms: self
+                .start_time
+                .map(|start| now.duration_since(start).as_millis() as u64)
+                .unwrap_or(0),
+            position: self.cursor,
+            expected,
+            typed,
+            accepted: typed == expected && self.strict_error_start.is_none(),
+        });
         let timing = self.char_time_ms.entry(expected).or_default();
         timing.0 += elapsed_ms;
         timing.1 += 1;
@@ -123,6 +152,17 @@ impl Session {
             self.cursor += 1;
         }
         self.skip_auto_paired_closers();
+        self.record_progress(now);
+    }
+
+    fn record_progress(&mut self, now: Instant) {
+        let Some(start) = self.start_time else {
+            return;
+        };
+        self.progress.push(ProgressEvent {
+            elapsed_ms: now.duration_since(start).as_millis() as u64,
+            correct_chars: self.correct_keystrokes,
+        });
     }
 
     fn skip_indentation_after_newline(&mut self, expected: char) {
@@ -177,6 +217,7 @@ impl Session {
         }
         self.results[self.cursor] = CharResult::Pending;
         self.corrections += 1;
+        self.record_progress(Instant::now());
     }
 
     fn skip_auto_pairs_backward(&mut self) {
@@ -344,6 +385,44 @@ mod tests {
         session.type_char('a');
         assert_eq!(session.cursor, 1);
         assert_eq!(session.mistakes, 2);
+    }
+
+    #[test]
+    fn corrected_mistakes_remain_in_the_keystroke_timeline() {
+        let mut session = Session::new(
+            content("ab"),
+            SessionMode::WordCount(1),
+            MistakeMode::Strict,
+            false,
+        );
+        session.type_char('x');
+        session.backspace();
+        session.type_char('a');
+        assert_eq!(session.keystrokes.len(), 2);
+        assert_eq!(session.keystrokes[0].typed, 'x');
+        assert!(!session.keystrokes[0].accepted);
+        assert!(session.keystrokes[1].accepted);
+    }
+
+    #[test]
+    fn progress_timeline_tracks_deleted_correct_characters() {
+        let mut session = Session::new(
+            content("ab"),
+            SessionMode::WordCount(1),
+            MistakeMode::Strict,
+            false,
+        );
+        session.type_char('a');
+        session.backspace();
+        session.type_char('a');
+        assert_eq!(
+            session
+                .progress
+                .iter()
+                .map(|event| event.correct_chars)
+                .collect::<Vec<_>>(),
+            vec![1, 0, 1]
+        );
     }
 
     #[test]

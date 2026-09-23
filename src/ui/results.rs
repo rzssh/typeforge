@@ -116,7 +116,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         rows[2],
     );
     frame.render_widget(
-        Paragraph::new("Tab next · Enter retry · s stats · Esc menu")
+        Paragraph::new("a analysis · Tab next · Enter retry · s stats · Esc menu")
             .alignment(Alignment::Center)
             .style(Style::default().fg(MUTED)),
         footer,

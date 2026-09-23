@@ -45,6 +45,7 @@ GITHUB_TOKEN=... typeforge
 - live WPM, accuracy, error count, and prominent session progress;
 - retry and next-session flow without returning to setup;
 - anonymous multiplayer rooms with synchronized countdowns, live opponents, reconnects, and race results;
+- line-linked cumulative WPM graphs with per-line pace and inline mistake review;
 - comparable personal best and five recent results;
 - persistent settings, session history, character timing, weak-character ranking, and confusion tracking;
 - duplicate and recent-repository avoidance;
@@ -96,6 +97,7 @@ typeforge join ABC123
 
 ### Results
 
+- `a`: analyze the current result
 - `Enter`: retry same content
 - `Tab`: next session
 - `s`: statistics

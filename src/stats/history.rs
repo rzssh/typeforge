@@ -244,6 +244,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use crate::app::SessionAnalysis;
 
     fn temporary_directory() -> PathBuf {
         let suffix = SystemTime::now()
@@ -275,6 +276,13 @@ mod tests {
             repository: None,
             confusion: HashMap::new(),
             character_stats: HashMap::new(),
+            analysis: SessionAnalysis {
+                text: String::new(),
+                keystrokes: Vec::new(),
+                progress: Vec::new(),
+                correct_positions: Vec::new(),
+                final_cursor: 0,
+            },
         }
     }
 

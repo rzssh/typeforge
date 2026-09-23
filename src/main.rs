@@ -164,13 +164,21 @@ fn run(
             app::AppState::Typing => handle_typing_key(&mut app, key),
             app::AppState::Results if app.multiplayer.is_some() => match key.code {
                 KeyCode::Esc => app.leave_room(),
+                KeyCode::Char('a') => app.open_analysis(),
                 _ => {}
             },
             app::AppState::Results => match key.code {
                 KeyCode::Esc => app.state = app::AppState::Menu,
                 KeyCode::Tab => app.start_session(false),
                 KeyCode::Enter => app.retry(),
+                KeyCode::Char('a') => app.open_analysis(),
                 KeyCode::Char('s') => app.state = app::AppState::Stats,
+                _ => {}
+            },
+            app::AppState::Analysis => match key.code {
+                KeyCode::Esc | KeyCode::Char('a') => app.close_analysis(),
+                KeyCode::Up | KeyCode::Char('k') => app.analysis_line_prev(),
+                KeyCode::Down | KeyCode::Char('j') => app.analysis_line_next(),
                 _ => {}
             },
             app::AppState::Stats => {

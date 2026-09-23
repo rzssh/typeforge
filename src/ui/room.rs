@@ -321,7 +321,7 @@ pub fn render_results(frame: &mut Frame, app: &App) {
         areas[1],
     );
     frame.render_widget(
-        Paragraph::new("Esc leave room")
+        Paragraph::new("a analysis · Esc leave room")
             .alignment(Alignment::Center)
             .style(Style::default().fg(MUTED)),
         footer,
