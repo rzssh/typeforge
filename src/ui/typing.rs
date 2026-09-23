@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use ratatui::prelude::*;
@@ -10,6 +11,8 @@ use two_face::re_exports::syntect::util::LinesWithEndings;
 use crate::app::App;
 use crate::engine::content::ContentSource;
 use crate::engine::session::{CharResult, SessionMode};
+use crate::multiplayer::client::ConnectionStatus;
+use crate::ui::room::player_color;
 use crate::ui::{ACCENT, ACCENT_DARK, BORDER, ERROR, MUTED, PANEL, SUCCESS, header, shell};
 
 type ColorCache = Mutex<Option<(String, Vec<Color>)>>;
@@ -43,27 +46,28 @@ pub fn render(frame: &mut Frame, app: &App) {
             snippet.license
         ),
     };
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(label, Style::default().fg(Color::Gray))),
-            Line::from(vec![
-                Span::styled(
-                    format!("[{}]", if app.show_typed { "typed" } else { "expected" }),
-                    Style::default().fg(MUTED),
+    let mut summary = vec![
+        Line::from(Span::styled(label, Style::default().fg(Color::Gray))),
+        Line::from(vec![
+            Span::styled(
+                format!("[{}]", if app.show_typed { "typed" } else { "expected" }),
+                Style::default().fg(MUTED),
+            ),
+            Span::styled(
+                format!(
+                    "  {:.0} WPM · {:.1}% accuracy · {} errors",
+                    session.wpm(),
+                    session.accuracy() * 100.0,
+                    session.mistakes
                 ),
-                Span::styled(
-                    format!(
-                        "  {:.0} WPM · {:.1}% accuracy · {} errors",
-                        session.wpm(),
-                        session.accuracy() * 100.0,
-                        session.mistakes
-                    ),
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ),
-            ]),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
         ]),
-        layout[0],
-    );
+    ];
+    if let Some(racers) = race_summary(app) {
+        summary.push(racers);
+    }
+    frame.render_widget(Paragraph::new(summary), layout[0]);
     let base = syntax_colors(session);
     let (lines, visible_chars, visible_cursor) = if app.show_typed {
         let typed = typed_buffer(session);
@@ -72,7 +76,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         (typed_lines(&typed), chars, cursor)
     } else {
         (
-            expected_lines(session, &base),
+            expected_lines(session, &base, &ghost_positions(app)),
             session.chars.clone(),
             session.cursor,
         )
@@ -104,14 +108,25 @@ pub fn render(frame: &mut Frame, app: &App) {
     );
     let mut footer_lines = Vec::new();
     if let Some((expected, typed)) = session.latest_error() {
-        footer_lines.push(Line::from(Span::styled(
-            format!(
-                "typed {} · expected {} · backspace to correct",
-                visible_mistake(typed),
-                visible_mistake(expected)
+        footer_lines.push(Line::from(vec![
+            Span::styled(
+                " ERROR ",
+                Style::default()
+                    .fg(Color::White)
+                    .bg(ERROR)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Style::default().fg(ERROR),
-        )));
+            Span::styled("  typed ", Style::default().fg(MUTED)),
+            Span::styled(
+                visible_mistake(typed),
+                Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  →  expected ", Style::default().fg(MUTED)),
+            Span::styled(
+                visible_mistake(expected),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+        ]));
     }
     let controls = if footer.width < 90 {
         "F2 view · ^R restart · Tab next · ^W word · ^U line · Esc menu".into()
@@ -302,31 +317,96 @@ fn meter(session: &crate::engine::session::Session) -> (f64, String) {
     }
 }
 
-fn expected_lines<'a>(session: &crate::engine::session::Session, base: &[Color]) -> Vec<Line<'a>> {
+fn ghost_positions(app: &App) -> HashMap<usize, Color> {
+    let mut ghosts = HashMap::new();
+    let Some(multiplayer) = &app.multiplayer else {
+        return ghosts;
+    };
+    let Some(room) = &multiplayer.room else {
+        return ghosts;
+    };
+    for (index, player) in room.players.iter().enumerate() {
+        if !player.connected
+            || multiplayer
+                .player_id
+                .as_ref()
+                .is_some_and(|player_id| player_id == &player.id)
+        {
+            continue;
+        }
+        ghosts
+            .entry(player.cursor)
+            .and_modify(|color| *color = Color::White)
+            .or_insert_with(|| player_color(index));
+    }
+    ghosts
+}
+
+fn race_summary(app: &App) -> Option<Line<'static>> {
+    let multiplayer = app.multiplayer.as_ref()?;
+    let room = multiplayer.room.as_ref()?;
+    let total = room.content.text.chars().count().max(1);
+    let mut spans = Vec::new();
+    if multiplayer.connection != ConnectionStatus::Connected {
+        spans.push(Span::styled(
+            "reconnecting…  ",
+            Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.extend(room.players.iter().enumerate().flat_map(|(index, player)| {
+        let progress = player.cursor as f64 / total as f64 * 100.0;
+        vec![
+            Span::styled("● ", Style::default().fg(player_color(index))),
+            Span::styled(
+                format!("{} {:.0}%  ", player.name, progress),
+                Style::default().fg(MUTED),
+            ),
+        ]
+    }));
+    Some(Line::from(spans))
+}
+
+fn expected_lines<'a>(
+    session: &crate::engine::session::Session,
+    base: &[Color],
+    ghosts: &HashMap<usize, Color>,
+) -> Vec<Line<'a>> {
     let mut lines = vec![Line::default()];
     for (index, character) in session.chars.iter().enumerate() {
         if *character == '\n' {
-            if let CharResult::Incorrect(_) = session.results[index] {
+            if let CharResult::Incorrect(typed) = session.results[index] {
                 lines
                     .last_mut()
                     .unwrap()
                     .spans
-                    .push(Span::styled("↵", mistake_style()));
+                    .push(Span::styled(inline_character(typed), mistake_style()));
             }
             lines.push(Line::default());
             continue;
         }
-        let style = match session.results[index] {
+        let mut style = match session.results[index] {
             CharResult::Correct | CharResult::Skipped => Style::default().fg(SUCCESS),
             CharResult::Incorrect(_) => mistake_style(),
             CharResult::Pending if session.is_auto_paired(index) => Style::default().fg(SUCCESS),
             CharResult::Pending => Style::default().fg(base[index]),
         };
+        if matches!(session.results[index], CharResult::Pending)
+            && let Some(color) = ghosts.get(&index)
+        {
+            style = style
+                .bg(*color)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD);
+        }
+        let displayed = match session.results[index] {
+            CharResult::Incorrect(typed) => inline_character(typed),
+            _ => character.to_string(),
+        };
         lines
             .last_mut()
             .unwrap()
             .spans
-            .push(Span::styled(character.to_string(), style));
+            .push(Span::styled(displayed, style));
     }
     lines
 }
@@ -428,7 +508,7 @@ fn syntax_colors(session: &crate::engine::session::Session) -> Vec<Color> {
     colors
 }
 
-fn visible_mistake(character: char) -> String {
+fn inline_character(character: char) -> String {
     match character {
         '\n' => "↵".into(),
         '\t' => "⇥".into(),
@@ -437,8 +517,14 @@ fn visible_mistake(character: char) -> String {
     }
 }
 
+fn visible_mistake(character: char) -> String {
+    inline_character(character)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::{
         expected_lines, line_cursor, meter, render_code, render_words, typed_buffer, wrap_words,
     };
@@ -532,8 +618,28 @@ mod tests {
             true,
         );
         session.type_char('(');
-        let lines = expected_lines(&session, &[Color::White; 3]);
+        let lines = expected_lines(&session, &[Color::White; 3], &HashMap::new());
         assert_eq!(lines[0].spans[2].style.fg, Some(SUCCESS));
+    }
+
+    #[test]
+    fn expected_view_overlays_the_typed_mistake() {
+        let mut session = Session::new(
+            TypingContent {
+                text: "ab".into(),
+                source: ContentSource::Words {
+                    language: WordLanguage::English,
+                    size: WordListSize::Top200,
+                },
+            },
+            SessionMode::WordCount(1),
+            MistakeMode::Free,
+            false,
+        );
+        session.type_char('x');
+        let lines = expected_lines(&session, &[Color::White; 2], &HashMap::new());
+        assert_eq!(lines[0].spans[0].content, "x");
+        assert_eq!(lines[0].spans[1].content, "b");
     }
 
     #[test]
