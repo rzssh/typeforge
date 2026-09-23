@@ -464,7 +464,14 @@ fn normalize_snippet(raw: &str, source_indent: usize) -> Option<String> {
         .map(|line| line.get(indentation..).unwrap_or(line).trim_end())
         .collect::<Vec<_>>()
         .join("\n");
-    if text.lines().any(|line| line.chars().count() > 88)
+    let positive_indentation = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .filter(|indentation| *indentation > 0)
+        .min();
+    if positive_indentation.is_none_or(|indentation| indentation < 2)
+        || text.lines().any(|line| line.chars().count() > 88)
         || text
             .chars()
             .any(|character| !character.is_ascii() || character == '\0' || character == '\r')
@@ -523,7 +530,26 @@ fn refresh_in_background_if_due(language: CodeLanguage) {
 }
 
 fn expand_tabs(text: &str) -> String {
-    text.replace('\t', "    ")
+    let mut output = String::with_capacity(text.len());
+    let mut column = 0;
+    for character in text.chars() {
+        match character {
+            '\n' => {
+                output.push(character);
+                column = 0;
+            }
+            '\t' => {
+                let spaces = 4 - column % 4;
+                output.extend(std::iter::repeat_n(' ', spaces));
+                column += spaces;
+            }
+            _ => {
+                output.push(character);
+                column += 1;
+            }
+        }
+    }
+    output
 }
 
 fn tree_sitter_language(language: CodeLanguage) -> Language {
@@ -686,6 +712,17 @@ mod tests {
         let normalized = normalize_snippet(&padded, 4).unwrap();
         assert!(normalized.contains("\n    return"));
         assert!(!normalized.contains("\n        return"));
+    }
+
+    #[test]
+    fn tabs_expand_to_visual_stops() {
+        assert_eq!(expand_tabs("  \tvalue\n\tvalue"), "    value\n    value");
+    }
+
+    #[test]
+    fn malformed_one_space_indentation_is_rejected() {
+        let source = "class ImplicitStage implements MarkStage {\n  constructor(private ide: IDE) {}\n  run(): Target[] {\n    return getActiveSelections(this.ide).map(\n      (selection) =>\n new ImplicitTarget({\n   editor: selection.editor,\n   isReversed: selection.selection.isReversed,\n   contentRange: selection.selection,\n }),\n    );\n  }\n}";
+        assert!(normalize_snippet(source, 0).is_none());
     }
 
     #[test]

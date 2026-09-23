@@ -40,6 +40,7 @@ GITHUB_TOKEN=... typeforge
 - terminal syntax highlighting;
 - strict correction and free-typing modes;
 - optional code autopairs for `()`, `[]`, and `{}`;
+- single-keystroke handling for indentation and formatter alignment padding;
 - stable wrapped word view and source-line scrolling for code;
 - native blinking or steady bar, block, and underline carets;
 - live WPM, accuracy, error count, and prominent session progress;

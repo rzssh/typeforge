@@ -136,6 +136,7 @@ impl Session {
             self.correct_keystrokes += 1;
             *self.char_correct.entry(expected).or_default() += 1;
             self.cursor += 1;
+            self.skip_repeated_spaces(expected);
             self.skip_indentation_after_newline(expected);
         } else {
             self.results[self.cursor] = CharResult::Incorrect(typed);
@@ -163,6 +164,16 @@ impl Session {
             elapsed_ms: now.duration_since(start).as_millis() as u64,
             correct_chars: self.correct_keystrokes,
         });
+    }
+
+    fn skip_repeated_spaces(&mut self, expected: char) {
+        if expected != ' ' {
+            return;
+        }
+        while self.chars.get(self.cursor) == Some(&' ') {
+            self.results[self.cursor] = CharResult::Skipped;
+            self.cursor += 1;
+        }
     }
 
     fn skip_indentation_after_newline(&mut self, expected: char) {
@@ -204,6 +215,7 @@ impl Session {
     }
 
     pub fn backspace(&mut self) {
+        self.skip_spaces_backward();
         self.skip_auto_pairs_backward();
         if self.cursor == 0 {
             return;
@@ -220,6 +232,16 @@ impl Session {
         self.record_progress(Instant::now());
     }
 
+    fn skip_spaces_backward(&mut self) {
+        while self.cursor > 0
+            && self.chars[self.cursor - 1] == ' '
+            && self.results[self.cursor - 1] == CharResult::Skipped
+        {
+            self.cursor -= 1;
+            self.results[self.cursor] = CharResult::Pending;
+        }
+    }
+
     fn skip_auto_pairs_backward(&mut self) {
         while self.cursor > 0 && self.is_auto_paired(self.cursor - 1) {
             self.cursor -= 1;
@@ -228,6 +250,7 @@ impl Session {
     }
 
     pub fn delete_word(&mut self) {
+        self.skip_spaces_backward();
         self.skip_auto_pairs_backward();
         while self.cursor > 0 && self.chars[self.cursor - 1].is_whitespace() {
             self.backspace();
@@ -248,6 +271,7 @@ impl Session {
     }
 
     pub fn delete_line(&mut self) {
+        self.skip_spaces_backward();
         self.skip_auto_pairs_backward();
         while self.cursor > 0 && self.chars[self.cursor - 1] != '\n' {
             self.backspace();
@@ -479,6 +503,45 @@ mod tests {
         session.type_char('a');
         session.type_char('\n');
         assert_eq!(session.cursor, 6);
+    }
+
+    #[test]
+    fn one_space_skips_alignment_padding() {
+        let mut session = Session::new(
+            content("ID          string"),
+            SessionMode::Snippet,
+            MistakeMode::Strict,
+            false,
+        );
+        session.type_char('I');
+        session.type_char('D');
+        session.type_char(' ');
+        assert_eq!(session.cursor, 12);
+        assert_eq!(session.correct_keystrokes, 3);
+        assert_eq!(session.results[2], CharResult::Correct);
+        assert!(
+            session.results[3..12]
+                .iter()
+                .all(|result| *result == CharResult::Skipped)
+        );
+    }
+
+    #[test]
+    fn backspace_crosses_skipped_alignment_padding() {
+        let mut session = Session::new(
+            content("ID   string"),
+            SessionMode::Snippet,
+            MistakeMode::Strict,
+            false,
+        );
+        for character in "ID ".chars() {
+            session.type_char(character);
+        }
+        session.backspace();
+        assert_eq!(session.cursor, 2);
+        assert_eq!(session.results[2..5], [CharResult::Pending; 3]);
+        session.type_char(' ');
+        assert_eq!(session.cursor, 5);
     }
 
     #[test]
