@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
@@ -10,12 +11,17 @@ use crate::engine::content::{
 };
 use crate::engine::corpus::{self, LoadRequest, LoadResult};
 use crate::engine::session::{Session, SessionMode};
+use crate::multiplayer::client::{ConnectionStatus, NetworkClient, NetworkEvent};
+use crate::multiplayer::protocol::{ClientMessage, RoomPhase, RoomSnapshot, ServerMessage, now_ms};
 use crate::stats::history::StatsStore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
     Menu,
     Loading,
+    RoomEntry,
+    Lobby,
+    Countdown,
     Typing,
     Results,
     Stats,
@@ -106,17 +112,32 @@ pub struct SessionResult {
     pub character_stats: HashMap<char, (u64, u32, u32)>,
 }
 
+pub struct MultiplayerState {
+    pub room: Option<RoomSnapshot>,
+    pub player_id: Option<String>,
+    pub connection: ConnectionStatus,
+    pub server_url: String,
+    client: NetworkClient,
+    clock_offset_ms: i64,
+    last_progress_sent: Instant,
+}
+
 pub struct App {
     pub state: AppState,
     pub settings: Settings,
     pub menu_selection: usize,
+    pub room_entry_selection: usize,
+    pub room_code_input: String,
+    pub player_name: String,
     pub session: Option<Session>,
     pub last_result: Option<SessionResult>,
     pub stats_store: StatsStore,
     pub status: Option<String>,
     pub show_typed: bool,
+    pub multiplayer: Option<MultiplayerState>,
     loader: Option<Receiver<Result<LoadResult, String>>>,
     last_content: Option<TypingContent>,
+    hosting_room: bool,
 }
 
 impl App {
@@ -131,13 +152,18 @@ impl App {
             state: AppState::Menu,
             settings,
             menu_selection: 0,
+            room_entry_selection: 1,
+            room_code_input: String::new(),
+            player_name: default_player_name(),
             session: None,
             last_result: None,
             stats_store,
             status,
             show_typed: false,
+            multiplayer: None,
             loader: None,
             last_content: None,
+            hosting_room: false,
         }
     }
 
@@ -245,9 +271,131 @@ impl App {
 
     pub fn menu_activate(&mut self) {
         if self.menu_selection + 1 == self.menu_rows() {
+            self.multiplayer = None;
             self.start_session(false);
         } else {
             self.menu_change(1);
+        }
+    }
+
+    pub fn open_multiplayer(&mut self, code: Option<String>) {
+        self.status = None;
+        self.room_code_input = code
+            .unwrap_or_default()
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .take(6)
+            .collect::<String>()
+            .to_ascii_uppercase();
+        self.room_entry_selection = if self.room_code_input.is_empty() {
+            1
+        } else {
+            2
+        };
+        self.state = AppState::RoomEntry;
+    }
+
+    pub fn room_entry_next(&mut self) {
+        self.room_entry_selection = (self.room_entry_selection + 1) % 4;
+    }
+
+    pub fn room_entry_prev(&mut self) {
+        self.room_entry_selection = self.room_entry_selection.checked_sub(1).unwrap_or(3);
+    }
+
+    pub fn room_entry_type(&mut self, character: char) {
+        match self.room_entry_selection {
+            0 if !character.is_control() && self.player_name.chars().count() < 16 => {
+                self.player_name.push(character);
+            }
+            1 if character.is_ascii_alphanumeric() && self.room_code_input.len() < 6 => {
+                self.room_code_input.push(character.to_ascii_uppercase());
+            }
+            _ => {}
+        }
+    }
+
+    pub fn room_entry_backspace(&mut self) {
+        match self.room_entry_selection {
+            0 => {
+                self.player_name.pop();
+            }
+            1 => {
+                self.room_code_input.pop();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn room_entry_activate(&mut self) {
+        match self.room_entry_selection {
+            0 => self.room_entry_selection = 1,
+            1 | 2 if !self.room_code_input.is_empty() => self.join_room(),
+            3 => {
+                self.hosting_room = true;
+                self.start_session(false);
+            }
+            _ => self.status = Some("Enter a room code".into()),
+        }
+    }
+
+    fn join_room(&mut self) {
+        let message = ClientMessage::Join {
+            code: self.room_code_input.clone(),
+            name: self.player_name.clone(),
+            resume_token: None,
+        };
+        self.connect_multiplayer(message);
+        self.state = AppState::Lobby;
+    }
+
+    fn connect_multiplayer(&mut self, initial: ClientMessage) {
+        let server_url =
+            std::env::var("TYPEFORGE_SERVER").unwrap_or_else(|_| "ws://127.0.0.1:8787".into());
+        self.status = None;
+        self.multiplayer = Some(MultiplayerState {
+            room: None,
+            player_id: None,
+            connection: ConnectionStatus::Connecting,
+            server_url: server_url.clone(),
+            client: NetworkClient::connect(server_url, initial),
+            clock_offset_ms: 0,
+            last_progress_sent: Instant::now(),
+        });
+    }
+
+    pub fn leave_room(&mut self) {
+        self.multiplayer = None;
+        self.session = None;
+        self.state = AppState::Menu;
+    }
+
+    pub fn toggle_ready(&mut self) {
+        let Some(multiplayer) = &self.multiplayer else {
+            return;
+        };
+        let ready = multiplayer
+            .room
+            .as_ref()
+            .zip(multiplayer.player_id.as_ref())
+            .and_then(|(room, player_id)| {
+                room.players.iter().find(|player| &player.id == player_id)
+            })
+            .is_some_and(|player| !player.ready);
+        multiplayer.client.send(ClientMessage::SetReady { ready });
+    }
+
+    pub fn start_race(&self) {
+        let Some(multiplayer) = &self.multiplayer else {
+            return;
+        };
+        let is_host = multiplayer
+            .room
+            .as_ref()
+            .zip(multiplayer.player_id.as_ref())
+            .is_some_and(|(room, player_id)| &room.host_id == player_id);
+        if is_host {
+            multiplayer.client.send(ClientMessage::Start);
         }
     }
 
@@ -287,8 +435,172 @@ impl App {
         }
     }
 
+    pub fn poll_multiplayer(&mut self) {
+        let mut events = Vec::new();
+        if let Some(multiplayer) = &mut self.multiplayer {
+            while let Some(event) = multiplayer.client.try_recv() {
+                events.push(event);
+            }
+        }
+        for event in events {
+            match event {
+                NetworkEvent::Status(status) => {
+                    if let Some(multiplayer) = &mut self.multiplayer {
+                        multiplayer.connection = status;
+                    }
+                }
+                NetworkEvent::Message(message) => match *message {
+                    ServerMessage::Welcome {
+                        player_id,
+                        resume_token: _,
+                        room,
+                    } => {
+                        if let Some(multiplayer) = &mut self.multiplayer {
+                            multiplayer.player_id = Some(player_id);
+                            let nonce = now_ms();
+                            multiplayer.client.send(ClientMessage::Ping { nonce });
+                        }
+                        self.apply_room(room);
+                    }
+                    ServerMessage::Snapshot { room } => self.apply_room(room),
+                    ServerMessage::Pong {
+                        nonce,
+                        server_time_ms,
+                    } => {
+                        if let Some(multiplayer) = &mut self.multiplayer {
+                            let midpoint = nonce.saturating_add(now_ms().saturating_sub(nonce) / 2);
+                            multiplayer.clock_offset_ms = server_time_ms as i64 - midpoint as i64;
+                        }
+                    }
+                    ServerMessage::Error { message, fatal } => {
+                        self.status = Some(message);
+                        if fatal {
+                            self.multiplayer = None;
+                            self.state = AppState::RoomEntry;
+                        }
+                    }
+                },
+            }
+        }
+        self.advance_countdown();
+        let should_send = self.state == AppState::Typing
+            && self.multiplayer.as_ref().is_some_and(|multiplayer| {
+                multiplayer.last_progress_sent.elapsed() >= Duration::from_millis(100)
+            });
+        if should_send {
+            self.send_progress(false);
+        }
+    }
+
+    fn apply_room(&mut self, room: RoomSnapshot) {
+        self.status = None;
+        let phase = room.phase;
+        if let Some(multiplayer) = &mut self.multiplayer {
+            multiplayer.room = Some(room.clone());
+        }
+        if self.state == AppState::Results && self.multiplayer.is_some() {
+            return;
+        }
+        match phase {
+            RoomPhase::Lobby => self.state = AppState::Lobby,
+            RoomPhase::Countdown { starts_at_ms } | RoomPhase::Racing { starts_at_ms } => {
+                if self.session.is_none() {
+                    self.last_content = Some(room.content.clone());
+                    self.session = Some(Session::new(
+                        room.content,
+                        room.mode,
+                        room.mistake_mode,
+                        room.autopairs,
+                    ));
+                }
+                if self.multiplayer_now_ms() >= starts_at_ms {
+                    self.start_multiplayer_session(starts_at_ms);
+                } else {
+                    self.state = AppState::Countdown;
+                }
+            }
+            RoomPhase::Finished { .. } if self.last_result.is_some() => {
+                self.state = AppState::Results;
+            }
+            RoomPhase::Finished { starts_at_ms } => {
+                if self.session.is_none() {
+                    self.last_content = Some(room.content.clone());
+                    self.session = Some(Session::new(
+                        room.content,
+                        room.mode,
+                        room.mistake_mode,
+                        room.autopairs,
+                    ));
+                    self.start_multiplayer_session(starts_at_ms);
+                }
+            }
+        }
+    }
+
+    fn multiplayer_now_ms(&self) -> u64 {
+        let offset = self
+            .multiplayer
+            .as_ref()
+            .map(|multiplayer| multiplayer.clock_offset_ms)
+            .unwrap_or(0);
+        now_ms().saturating_add_signed(offset)
+    }
+
+    fn advance_countdown(&mut self) {
+        if self.state != AppState::Countdown {
+            return;
+        }
+        let starts_at_ms = self
+            .multiplayer
+            .as_ref()
+            .and_then(|multiplayer| multiplayer.room.as_ref())
+            .and_then(|room| room.phase.starts_at_ms());
+        if let Some(starts_at_ms) = starts_at_ms
+            && self.multiplayer_now_ms() >= starts_at_ms
+        {
+            self.start_multiplayer_session(starts_at_ms);
+        }
+    }
+
+    fn start_multiplayer_session(&mut self, starts_at_ms: u64) {
+        let elapsed = self.multiplayer_now_ms().saturating_sub(starts_at_ms);
+        if let Some(session) = &mut self.session
+            && session.start_time.is_none()
+        {
+            session.start_with_elapsed(Duration::from_millis(elapsed));
+        }
+        self.state = AppState::Typing;
+    }
+
+    fn send_progress(&mut self, finished: bool) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let message = ClientMessage::Progress {
+            cursor: session.cursor,
+            wpm: session.wpm(),
+            accuracy: session.accuracy(),
+            mistakes: session.mistakes,
+            finished,
+            elapsed_ms: (session.elapsed_secs() * 1_000.0) as u64,
+        };
+        if let Some(multiplayer) = &mut self.multiplayer {
+            multiplayer.client.send(message);
+            multiplayer.last_progress_sent = Instant::now();
+        }
+    }
+
+    pub fn countdown_remaining_ms(&self) -> Option<u64> {
+        self.multiplayer
+            .as_ref()
+            .and_then(|multiplayer| multiplayer.room.as_ref())
+            .and_then(|room| room.phase.starts_at_ms())
+            .map(|starts_at_ms| starts_at_ms.saturating_sub(self.multiplayer_now_ms()))
+    }
+
     pub fn cancel_loading(&mut self) {
         self.loader = None;
+        self.hosting_room = false;
         self.state = AppState::Menu;
     }
 
@@ -387,6 +699,18 @@ impl App {
         let autopairs =
             self.settings.code_autopairs && matches!(&content.source, ContentSource::Code(_));
         self.last_content = Some(content.clone());
+        if self.hosting_room {
+            self.hosting_room = false;
+            self.connect_multiplayer(ClientMessage::Create {
+                name: self.player_name.clone(),
+                content,
+                mode,
+                mistake_mode: self.settings.mistake_mode,
+                autopairs,
+            });
+            self.state = AppState::Lobby;
+            return;
+        }
         self.session = Some(Session::new(
             content,
             mode,
@@ -450,6 +774,7 @@ impl App {
     }
 
     pub fn finish_session(&mut self) {
+        self.send_progress(true);
         let Some(session) = self.session.take() else {
             return;
         };
@@ -534,6 +859,16 @@ impl App {
         self.last_result = Some(result);
         self.state = AppState::Results;
     }
+}
+
+fn default_player_name() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "player".into())
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(16)
+        .collect()
 }
 
 fn word_sample_size(mode: SessionMode) -> usize {

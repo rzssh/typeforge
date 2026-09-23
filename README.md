@@ -44,6 +44,7 @@ GITHUB_TOKEN=... typeforge
 - native blinking or steady bar, block, and underline carets;
 - live WPM, accuracy, error count, and prominent session progress;
 - retry and next-session flow without returning to setup;
+- anonymous multiplayer rooms with synchronized countdowns, live opponents, reconnects, and race results;
 - comparable personal best and five recent results;
 - persistent settings, session history, character timing, weak-character ranking, and confusion tracking;
 - duplicate and recent-repository avoidance;
@@ -59,8 +60,29 @@ GITHUB_TOKEN=... typeforge
 - `←` / `→` or `h` / `l`: change
 - `Enter`: apply or start
 - `r`: fetch another code repository
+- `m`: create or join a multiplayer room
 - `s`: statistics
 - `q` or `Esc`: quit
+
+### Multiplayer
+
+- `↑` / `↓`: select name, room code, join, or create
+- `r`: toggle ready in a lobby
+- `Enter`: join/create, or start the countdown as host
+- `Esc`: leave the room
+
+Run a relay and point each client at it:
+
+```sh
+typeforge relay 0.0.0.0:8787
+TYPEFORGE_SERVER=ws://relay.example:8787 typeforge
+```
+
+For a public relay, terminate TLS with a reverse proxy and use a `wss://` URL. Invitations are copyable commands:
+
+```sh
+typeforge join ABC123
+```
 
 ### Session
 
@@ -95,7 +117,7 @@ Repository discovery accepts MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, and IS
 
 ## Local data
 
-TypeForge stores downloaded content under the platform cache directory and settings/statistics under the platform data directory, each in a `typeforge` subdirectory. It does not upload typing history.
+TypeForge stores downloaded content under the platform cache directory and settings/statistics under the platform data directory, each in a `typeforge` subdirectory. Solo sessions never upload typing history. Multiplayer sends the shared content and live race metrics to the configured relay; rooms are held only in relay memory.
 
 Minimum terminal size is 64×20. Caret shape and blink use native terminal controls, so exact rendering depends on the terminal. A network connection is needed to download a word list or find the first code snippets for a language; valid cached content remains usable offline.
 
@@ -116,4 +138,4 @@ cargo test --locked -- --ignored --test-threads=1
 
 ## Scope
 
-TypeForge completes one local word/code practice loop: restored setup, wrapped word/source-line presentation, configurable native caret, live feedback, correction controls, retry/new-session flow, comparable results, attribution, and durable history. It deliberately has no accounts, cloud sync, leaderboards, themes, gamification, or generated adaptive drills.
+TypeForge supports local practice and anonymous live races: restored setup, wrapped word/source-line presentation, configurable native caret, live feedback, correction controls, synchronized rooms, retry/new-session flow, comparable results, attribution, and durable local history. It deliberately has no accounts, cloud sync, persistent leaderboards, themes, gamification, or generated adaptive drills.

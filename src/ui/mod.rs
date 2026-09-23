@@ -1,5 +1,6 @@
 mod menu;
 mod results;
+mod room;
 mod stats;
 mod typing;
 
@@ -31,7 +32,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     match app.state {
         AppState::Menu | AppState::Loading => menu::render(frame, app),
+        AppState::RoomEntry => room::render_entry(frame, app),
+        AppState::Lobby => room::render_lobby(frame, app),
+        AppState::Countdown => room::render_countdown(frame, app),
         AppState::Typing => typing::render(frame, app),
+        AppState::Results if app.multiplayer.is_some() => room::render_results(frame, app),
         AppState::Results => results::render(frame, app),
         AppState::Stats => stats::render(frame, app),
     }

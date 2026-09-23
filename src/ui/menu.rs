@@ -151,9 +151,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     let controls = if app.state == AppState::Loading {
         "Esc cancel"
     } else if app.settings.practice == PracticeKind::Code {
-        "↑↓/jk select · ←→/hl adjust · Enter start · r refresh · s stats · q quit"
+        "↑↓/jk select · ←→/hl adjust · Enter solo · m multiplayer · r refresh · s stats · q quit"
     } else {
-        "↑↓/jk select · ←→/hl adjust · Enter start · s stats · q quit"
+        "↑↓/jk select · ←→/hl adjust · Enter solo · m multiplayer · s stats · q quit"
     };
     frame.render_widget(
         Paragraph::new(controls)

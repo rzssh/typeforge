@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -229,6 +229,11 @@ impl Session {
                 }
                 _ => None,
             })
+    }
+
+    pub fn start_with_elapsed(&mut self, elapsed: Duration) {
+        let now = Instant::now();
+        self.start_time = Some(now.checked_sub(elapsed).unwrap_or(now));
     }
 
     pub fn is_complete(&self) -> bool {

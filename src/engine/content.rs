@@ -214,7 +214,7 @@ pub struct Snippet {
     pub indent_normalized: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ContentSource {
     Words {
         language: WordLanguage,
@@ -223,7 +223,7 @@ pub enum ContentSource {
     Code(Snippet),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypingContent {
     pub text: String,
     pub source: ContentSource,
