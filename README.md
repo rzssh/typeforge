@@ -6,7 +6,7 @@ TypeForge finds permissively licensed GitHub repositories, extracts complete lan
 
 [![CI](https://github.com/rzssh/typeforge/actions/workflows/ci.yml/badge.svg)](https://github.com/rzssh/typeforge/actions/workflows/ci.yml)
 
-[![TypeForge real-code result](assets/screenshot.png)](assets/demo.gif)
+[![TypeForge real-code demo](assets/demo.gif)](assets/demo.gif)
 
 _Recorded demo is automated; displayed speed measures playback, not human performance._
 
